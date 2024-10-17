@@ -57,13 +57,18 @@ def generate_image_from_prompt(prompt):
             "model": "dall-e-3",  # Specify the model
             "prompt": prompt,
             "n": 1,  # DALL-E 3 only supports n=1
-            "size": "1024x1024",  # Can be 1024x1024, 1792x1024, or 1024x1792
+            "size": "1024x1024",  # Specify size
             "response_format": "url"  # The format of the returned image
         }
+
+        # Log the prompt being sent for debugging
+        st.write(f"Sending prompt to OpenAI API: {prompt}")
+
         response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
         
         # Log the API response for debugging
-        st.write(f"API Response: {response.text}")  # Log the response to the Streamlit interface
+        st.write(f"API Response Status Code: {response.status_code}")
+        st.write(f"API Response Body: {response.text}")  # Log the response to the Streamlit interface
         
         response.raise_for_status()  # Raise an HTTPError for bad responses
         
@@ -215,3 +220,4 @@ if st.button("Generate Video"):
                 delete_from_s3(f"generated_files/{voiceover_file}")
                 for idx, _ in enumerate(images):
                     delete_from_s3(f"generated_files/image_{idx}.jpg")
+
