@@ -74,7 +74,7 @@ def generate_style_prompt(enhanced_prompt):
         data = {
             "model": "gpt-4o-mini",
             "messages": [
-                {"role": "user", "content": f"Generate a consistent style and setting description for images based on the following enhanced prompt: {enhanced_prompt}"}
+                {"role": "user", "content": f"Generate a visual style and setting description for images based on the following enhanced prompt (keep it under 300 characters): {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
@@ -94,7 +94,7 @@ def generate_story_segments(enhanced_prompt):
         data = {
             "model": "gpt-4o-mini",  # Use gpt-4o-mini for story generation
             "messages": [
-                {"role": "user", "content": f"Create a short story with a maximum of 5 segments from the following prompt: {enhanced_prompt}"}
+                {"role": "user", "content": f"Create a short story with a maximum of 5 segments from the following prompt (keep each segment under 100 characters): {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
@@ -204,19 +204,18 @@ def create_subtitles(text, duration):
         if not line.strip():
             continue
         end_time = start_time + per_line_duration
-        subtitles.append(((start_time, end_time), line.strip()))
+        subtitles.append(((start_time, end_time), line))
         start_time = end_time
 
     return subtitles
 
-# Generate video from images, audio, and subtitles
-def compile_video(images, voiceover, subtitles, font_style, output_file="output_video.mp4"):
-    total_duration = 60  # Limit video to 60 seconds
-    image_duration = total_duration / len(images) if images else 0
+# Function to compile the final video with images, audio, and subtitles
+def compile_video(images, voiceover, subtitles, font_style):
     clips = []
+    total_duration = len(images) * 3  # 3 seconds per image
 
-    for idx, image_url in enumerate(images):
-        img_clip = ImageSequenceClip([image_url], fps=24).set_duration(image_duration)
+    for img_url in images:
+        img_clip = ImageSequenceClip([img_url], fps=24).set_duration(3)
         clips.append(img_clip)
 
     audio_clip = AudioFileClip(voiceover).set_duration(total_duration)
@@ -228,6 +227,7 @@ def compile_video(images, voiceover, subtitles, font_style, output_file="output_
     
     # Combine video and subtitles
     final_video = CompositeVideoClip([video, subtitle_clip])
+    output_file = "output_video.mp4"
     final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
 
     return output_file
@@ -303,4 +303,3 @@ if st.button("Generate Video"):
                         delete_from_s3(f"generated_files/{voiceover_file}")
                         for idx, _ in enumerate(images):
                             delete_from_s3(f"generated_files/image_{idx}.jpg")
-
