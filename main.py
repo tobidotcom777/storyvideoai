@@ -52,7 +52,7 @@ def delete_from_s3(s3_key):
 def enhance_prompt(prompt):
     try:
         data = {
-            "model": "gpt-4",
+            "model": "gpt-4o-mini",  # Use gpt-4o-mini for prompt enhancement
             "messages": [
                 {"role": "user", "content": f"Enhance the following prompt for a story video: {prompt}"}
             ]
@@ -67,6 +67,26 @@ def enhance_prompt(prompt):
     except Exception as e:
         st.error(f"Error: {str(e)}")
         return prompt  # Fallback to the original prompt in case of error
+
+# Function to generate story segments from the enhanced prompt
+def generate_story_segments(enhanced_prompt):
+    try:
+        data = {
+            "model": "gpt-4o-mini",  # Use gpt-4o-mini for story generation
+            "messages": [
+                {"role": "user", "content": f"Create a detailed story from the following prompt: {enhanced_prompt}"}
+            ]
+        }
+        response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
+        response.raise_for_status()  # Raise an HTTPError for bad responses
+        story = response.json()['choices'][0]['message']['content']
+        return story.split("\n")  # Split the story into segments
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"Error generating story: {http_err}")
+        return []  # Return an empty list in case of error
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return []  # Return an empty list in case of error
 
 # Function to generate images from a prompt
 def generate_image_from_prompt(prompt):
@@ -208,42 +228,50 @@ if st.button("Generate Video"):
         with st.spinner("Enhancing your prompt..."):
             enhanced_prompt = enhance_prompt(user_prompt)
             st.write(f"Enhanced Prompt: {enhanced_prompt}")
+
+        # Generate story segments from the enhanced prompt
+        with st.spinner("Generating story segments..."):
+            story_segments = generate_story_segments(enhanced_prompt)
+            story_segments = clean_story_segments(story_segments)
+            st.write("Generated Story Segments:")
+            for segment in story_segments:
+                st.write(segment)
         
         # Generate images
         images = []
-        story_segments = [f"{i+1}. {enhanced_prompt}" for i in range(5)]  # Generate fake 5 segments for testing
-        story_segments = clean_story_segments(story_segments)
-
         for segment in story_segments:
-            img_url = generate_image_from_prompt(segment)
-            if img_url:
-                images.append(img_url)
+            with st.spinner(f"Generating image for: {segment}"):
+                img_url = generate_image_from_prompt(segment)
+                if img_url:
+                    images.append(img_url)
+                else:
+                    st.error("No images were generated. Please check the prompt or try again.")
+                    break  # Exit loop if any image fails to generate
         
-        if len(images) == 0:
-            st.error("No images were generated. Please check the prompt or try again.")
-        else:
+        if len(images) > 0:  # Proceed only if at least one image was generated
             # Generate voiceover
-            voiceover_file = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
-            
-            if voiceover_file:
-                # Create subtitles
-                subtitles = create_subtitles("\n".join(story_segments), 60)
+            with st.spinner("Generating voiceover..."):
+                voiceover_file = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
                 
-                # Compile video
-                video_file = compile_video(images, voiceover_file, subtitles, font_choice)
-                
-                # Upload final video to S3
-                s3_video_url = upload_to_s3(video_file)
-                
-                # Display the video in the app
-                st.video(video_file)
-                
-                # Download button for the video
-                with open(video_file, "rb") as f:
-                    st.download_button("Download Video", data=f, file_name="output_video.mp4")
-                
-                # Clean up S3 space
-                delete_from_s3(f"generated_files/{voiceover_file}")
-                for idx, _ in enumerate(images):
-                    delete_from_s3(f"generated_files/image_{idx}.jpg")
-
+                if voiceover_file:
+                    # Create subtitles
+                    subtitles = create_subtitles("\n".join(story_segments), 60)
+                    
+                    # Compile video
+                    with st.spinner("Compiling video..."):
+                        video_file = compile_video(images, voiceover_file, subtitles, font_choice)
+                        
+                        # Upload final video to S3
+                        s3_video_url = upload_to_s3(video_file)
+                        
+                        # Display the video in the app
+                        st.video(s3_video_url)
+                        
+                        # Download button for the video
+                        with open(video_file, "rb") as f:
+                            st.download_button("Download Video", data=f, file_name="output_video.mp4")
+                        
+                        # Clean up S3 space
+                        delete_from_s3(f"generated_files/{voiceover_file}")
+                        for idx, _ in enumerate(images):
+                            delete_from_s3(f"generated_files/image_{idx}.jpg")
