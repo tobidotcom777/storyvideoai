@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import boto3
 import os
-import time
 from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip, TextClip
 from moviepy.video.tools.subtitles import SubtitlesClip
 
@@ -83,6 +82,20 @@ def generate_voice_overlay(text, voice="Alloy", speed=1):
         st.error(f"Error generating voiceover: {response.text}")
         return None
 
+# Function to create subtitles based on text and duration
+def create_subtitles(text, duration):
+    lines = text.split("\n")
+    subtitles = []
+    per_line_duration = duration / len(lines)
+    start_time = 0
+
+    for line in lines:
+        end_time = start_time + per_line_duration
+        subtitles.append(((start_time, end_time), line))
+        start_time = end_time
+
+    return subtitles
+
 # Generate video from images, audio, and subtitles
 def compile_video(images, voiceover, subtitles, font_style, output_file="output_video.mp4"):
     total_duration = 60  # Limit video to 60 seconds
@@ -143,7 +156,7 @@ if st.button("Generate Video"):
     # Generate voiceover
     voiceover_file = generate_voice_overlay("\n".join(story_segments[:5]), voice=voice_choice)
     
-    # Create subtitles (simple for now)
+    # Create subtitles
     subtitles = create_subtitles("\n".join(story_segments), 60)
     
     # Compile video
