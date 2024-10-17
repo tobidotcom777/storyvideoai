@@ -5,7 +5,7 @@ import os
 from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip, TextClip
 from moviepy.video.tools.subtitles import SubtitlesClip
 
-# Access credentials from secrets.toml
+# Access credentials from secrets.toml (Managed by Streamlit)
 openai_api_key = st.secrets["OPENAI_API_KEY"]
 aws_access_key_id = st.secrets["AWS_ACCESS_KEY_ID"]
 aws_secret_access_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
@@ -29,8 +29,8 @@ AVAILABLE_VOICES = ["Alloy", "Echo", "Fable", "Onyx", "Nova", "Shimmer"]
 
 # Helper function to upload to S3
 def upload_to_s3(filename):
-    s3_key = f"generated_files/{filename}"
     try:
+        s3_key = f"generated_files/{filename}"
         s3_client.upload_file(filename, aws_s3_bucket_name, s3_key)
         file_url = f"https://{aws_s3_bucket_name}.s3.{aws_region}.amazonaws.com/{s3_key}"
         st.write(f"Uploaded {filename} to S3: {file_url}")
@@ -49,49 +49,63 @@ def delete_from_s3(s3_key):
 
 # Function to generate images from a prompt
 def generate_image_from_prompt(prompt):
-    data = {
-        "model": "dall-e-3",
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "response_format": "url"
-    }
-    response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
-    if response.status_code == 200:
+    if not prompt.strip():
+        st.error("Prompt cannot be empty.")
+        return None
+    try:
+        data = {
+            "model": "dall-e-3",
+            "prompt": prompt,
+            "n": 1,
+            "size": "1024x1024",
+            "response_format": "url"
+        }
+        response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
+        response.raise_for_status()  # Raise an HTTPError for bad responses
         return response.json()['data'][0]['url']
-    else:
-        st.error(f"Error generating image: {response.text}")
+    except Exception as e:
+        st.error(f"Error generating image: {str(e)}")
         return None
 
 # Generate voice overlay using OpenAI's TTS API
 def generate_voice_overlay(text, voice="Alloy", speed=1):
-    data = {
-        "model": "tts-1",
-        "input": text,
-        "voice": voice.lower(),
-        "speed": speed,
-        "response_format": "mp3"
-    }
-    response = requests.post(TTS_API_URL, headers=HEADERS, json=data)
-    if response.status_code == 200:
+    if not text.strip():
+        st.error("Text for voiceover cannot be empty.")
+        return None
+    try:
+        data = {
+            "model": "tts-1",
+            "input": text,
+            "voice": voice.lower(),
+            "speed": speed,
+            "response_format": "mp3"
+        }
+        response = requests.post(TTS_API_URL, headers=HEADERS, json=data)
+        response.raise_for_status()  # Raise an HTTPError for bad responses
         voiceover_filename = "voiceover.mp3"
         with open(voiceover_filename, "wb") as f:
             f.write(response.content)
         return voiceover_filename
-    else:
-        st.error(f"Error generating voiceover: {response.text}")
+    except Exception as e:
+        st.error(f"Error generating voiceover: {str(e)}")
         return None
 
 # Function to create subtitles based on text and duration
 def create_subtitles(text, duration):
     lines = text.split("\n")
+    if not lines:
+        st.error("Subtitle text cannot be empty.")
+        return []
+    
     subtitles = []
     per_line_duration = duration / len(lines)
     start_time = 0
 
     for line in lines:
+        if not line.strip():
+            continue
         end_time = start_time + per_line_duration
-        subtitles.append(((start_time, end_time), line))
+        subtitles.append(((start_time, end_time), line.strip()))
         start_time = end_time
 
     return subtitles
@@ -141,40 +155,46 @@ font_choice = st.selectbox("Choose a font style for subtitles:", ["Arial-Bold", 
 if st.button("Generate Video"):
     st.info("Generating story video... Please be patient, this may take a few minutes.")
     
-    # Placeholder for optimized prompt and cleaned story segments
-    optimized_prompt = user_prompt  # For now, just use raw user input
-    story_segments = [f"{i+1}. {optimized_prompt}" for i in range(5)]  # Fake 5 segments for now
-    story_segments = clean_story_segments(story_segments)
-    
-    # Generate images
-    images = []
-    for segment in story_segments:
-        img_url = generate_image_from_prompt(segment)
-        if img_url:
-            images.append(img_url)
-    
-    # Generate voiceover
-    voiceover_file = generate_voice_overlay("\n".join(story_segments[:5]), voice=voice_choice)
-    
-    # Create subtitles
-    subtitles = create_subtitles("\n".join(story_segments), 60)
-    
-    # Compile video
-    if images and voiceover_file:
-        video_file = compile_video(images, voiceover_file, subtitles, font_choice)
+    # Validate user input
+    if not user_prompt.strip():
+        st.error("Please enter a valid story or theme.")
+    else:
+        # Placeholder for optimized prompt and cleaned story segments
+        story_segments = [f"{i+1}. {user_prompt}" for i in range(5)]  # Generate fake 5 segments for testing
+        story_segments = clean_story_segments(story_segments)
         
-        # Upload final video to S3
-        s3_video_url = upload_to_s3(video_file)
+        # Generate images
+        images = []
+        for segment in story_segments:
+            img_url = generate_image_from_prompt(segment)
+            if img_url:
+                images.append(img_url)
         
-        # Display the video in the app
-        st.video(video_file)
-        
-        # Download button for the video
-        with open(video_file, "rb") as f:
-            st.download_button("Download Video", data=f, file_name="final_video.mp4", mime="video/mp4")
-        
-        # Clean up intermediate files
-        delete_from_s3(f"generated_files/{voiceover_file}")
-        for img_file in images:
-            os.remove(img_file)
-        os.remove(video_file)
+        if len(images) == 0:
+            st.error("No images were generated. Please try again.")
+        else:
+            # Generate voiceover
+            voiceover_file = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
+            
+            if voiceover_file:
+                # Create subtitles
+                subtitles = create_subtitles("\n".join(story_segments), 60)
+                
+                # Compile video
+                video_file = compile_video(images, voiceover_file, subtitles, font_choice)
+                
+                # Upload final video to S3
+                s3_video_url = upload_to_s3(video_file)
+                
+                # Display the video in the app
+                st.video(video_file)
+                
+                # Download button for the video
+                with open(video_file, "rb") as f:
+                    st.download_button("Download Video", data=f, file_name="final_video.mp4", mime="video/mp4")
+                
+                # Clean up intermediate files
+                delete_from_s3(f"generated_files/{voiceover_file}")
+                for img_file in images:
+                    os.remove(img_file)
+
