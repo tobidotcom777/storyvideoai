@@ -61,8 +61,15 @@ def generate_image_from_prompt(prompt):
             "response_format": "url"
         }
         response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
+        
+        # Log the API response
+        st.write(f"API Response: {response.text}")  # For debugging purposes
+
         response.raise_for_status()  # Raise an HTTPError for bad responses
         return response.json()['data'][0]['url']
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"HTTP error occurred: {http_err}")
+        return None
     except Exception as e:
         st.error(f"Error generating image: {str(e)}")
         return None
@@ -86,6 +93,9 @@ def generate_voice_overlay(text, voice="Alloy", speed=1):
         with open(voiceover_filename, "wb") as f:
             f.write(response.content)
         return voiceover_filename
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"HTTP error occurred: {http_err}")
+        return None
     except Exception as e:
         st.error(f"Error generating voiceover: {str(e)}")
         return None
@@ -171,7 +181,7 @@ if st.button("Generate Video"):
                 images.append(img_url)
         
         if len(images) == 0:
-            st.error("No images were generated. Please try again.")
+            st.error("No images were generated. Please check the prompt or try again.")
         else:
             # Generate voiceover
             voiceover_file = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
@@ -197,4 +207,4 @@ if st.button("Generate Video"):
                 delete_from_s3(f"generated_files/{voiceover_file}")
                 for img_file in images:
                     os.remove(img_file)
-
+                os.remove(video_file)
