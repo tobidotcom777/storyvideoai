@@ -206,7 +206,7 @@ def clean_story_segments(story_segments):
     cleaned_segments = []
     for segment in story_segments:
         cleaned_segment = segment.strip()
-        if not cleaned_segment[0].isdigit() or '.' not in cleaned_segment[:3]:
+        if cleaned_segment and (not cleaned_segment[0].isdigit() or '.' not in cleaned_segment[:3]):
             cleaned_segments.append(cleaned_segment)
     return cleaned_segments
 
