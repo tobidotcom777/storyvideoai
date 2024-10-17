@@ -26,6 +26,7 @@ CHAT_API_URL = "https://api.openai.com/v1/chat/completions"
 HEADERS = {"Authorization": f"Bearer {openai_api_key}"}
 
 AVAILABLE_VOICES = ["Alloy", "Echo", "Fable", "Onyx", "Nova", "Shimmer"]
+AVAILABLE_FONTS = ["Arial-Bold", "Courier", "Helvetica", "Times-Roman", "Verdana"]
 
 # Helper function to upload to S3
 def upload_to_s3(filename):
@@ -129,7 +130,7 @@ def generate_voice_overlay(input_text, voice="onyx"):
         return None  # Return None if there's an error
 
 # Function to compile the final video with images, audio, and subtitles
-def compile_video(images, voiceover):
+def compile_video(images, voiceover, font):
     clips = []
     total_duration = len(images) * 3  # 3 seconds per image
 
@@ -140,6 +141,14 @@ def compile_video(images, voiceover):
     audio_clip = AudioFileClip(voiceover).set_duration(total_duration)
     video = CompositeVideoClip(clips).set_duration(total_duration).set_audio(audio_clip)
 
+    # Generate subtitles using the selected font
+    subtitles = [(i * 3, (i + 1) * 3, segment) for i, segment in enumerate(story_segments)]
+    subtitle_clips = [TextClip(txt, fontsize=24, color='white', font=font).set_position('bottom').set_duration(3).set_start(start) for start, end, txt in subtitles]
+    
+    # Composite the video with subtitles
+    for subtitle in subtitle_clips:
+        video = CompositeVideoClip([video, subtitle])
+    
     output_file = "output_video.mp4"
     video.write_videofile(output_file, codec="libx264", audio_codec="aac")
 
@@ -150,6 +159,7 @@ st.title("Story-Driven Video Generator")
 
 user_prompt = st.text_area("Enter a short story or theme for the video:", "Spooky Haunted Graveyard in Texas")
 voice_choice = st.selectbox("Choose a voice for the narration:", AVAILABLE_VOICES)
+font_choice = st.selectbox("Choose a font style for the subtitles:", AVAILABLE_FONTS)
 
 if st.button("Generate Video"):
     st.info("Generating story video... Please be patient, this may take a few minutes.")
@@ -191,14 +201,16 @@ if st.button("Generate Video"):
                 if voiceover_file:
                     # Compile video
                     with st.spinner("Compiling video..."):
-                        video_file = compile_video(images, voiceover_file)
-                        
-                        # Upload final video to S3
-                        s3_video_url = upload_to_s3(video_file)
-                        
-                        # Display the video in the app
-                        st.video(s3_video_url)
-                        
-                        # Download button for the video
-                        with open(video_file, "rb") as f:
-                            st.download_button("Download Video", data=f, file_name="output_video.mp4")
+                        video_file = compile_video(images, voiceover_file, font_choice)
+                        if video_file:
+                            st.success("Video successfully created!")
+                            st.video(video_file)
+                            st.download_button("Download Video", video_file)
+                            # Upload the final video to S3
+                            upload_to_s3(video_file)
+
+# Clear temporary files if needed (optional)
+# os.remove("voiceover.mp3")
+# for img in images:
+#     os.remove(img)  # Clean up any image files if downloaded
+
