@@ -68,25 +68,50 @@ def enhance_prompt(prompt):
         st.error(f"Error: {str(e)}")
         return prompt  # Fallback to the original prompt in case of error
 
+# Function to generate a consistent style prompt based on the enhanced prompt
+def generate_style_prompt(enhanced_prompt):
+    try:
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "user", "content": f"Generate a consistent style and setting description for images based on the following enhanced prompt: {enhanced_prompt}"}
+            ]
+        }
+        response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
+        response.raise_for_status()  # Raise an HTTPError for bad responses
+        style_prompt = response.json()['choices'][0]['message']['content']
+        return style_prompt
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"Error generating style prompt: {http_err}")
+        return ""  # Return empty style if there's an error
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return ""  # Return empty style if there's an error
+
 # Function to generate story segments from the enhanced prompt
 def generate_story_segments(enhanced_prompt):
     try:
         data = {
             "model": "gpt-4o-mini",  # Use gpt-4o-mini for story generation
             "messages": [
-                {"role": "user", "content": f"Create a detailed story from the following prompt: {enhanced_prompt}"}
+                {"role": "user", "content": f"Create a short story with a maximum of 5 segments from the following prompt: {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
         response.raise_for_status()  # Raise an HTTPError for bad responses
         story = response.json()['choices'][0]['message']['content']
-        return story.split("\n")  # Split the story into segments
+        return story.split("\n")[:5]  # Limit to first 5 segments
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating story: {http_err}")
         return []  # Return an empty list in case of error
     except Exception as e:
         st.error(f"Error: {str(e)}")
         return []  # Return an empty list in case of error
+
+# Function to create a consistent image prompt
+def create_image_prompt(segment, style_prompt):
+    negative_prompt = "Make sure there is no text in the image."
+    return f"{style_prompt} {segment.strip()} {negative_prompt}"
 
 # Function to generate images from a prompt
 def generate_image_from_prompt(prompt):
@@ -134,16 +159,25 @@ def generate_voice_overlay(text, voice="Alloy", speed=1):
     if not text.strip():
         st.error("Text for voiceover cannot be empty.")
         return None
+    
+    # Ensure the voice is in lowercase
+    voice = voice.lower()
+    
     try:
         data = {
-            "model": "tts-1",
+            "model": "tts-1",  # Specify the TTS model
             "input": text,
-            "voice": voice.lower(),
+            "voice": voice,
             "speed": speed,
             "response_format": "mp3"
         }
+
+        # Log the data being sent for debugging
+        st.write(f"Sending data to OpenAI TTS API: {data}")
+
         response = requests.post(TTS_API_URL, headers=HEADERS, json=data)
         response.raise_for_status()  # Raise an HTTPError for bad responses
+        
         voiceover_filename = "voiceover.mp3"
         with open(voiceover_filename, "wb") as f:
             f.write(response.content)
@@ -178,39 +212,27 @@ def create_subtitles(text, duration):
 # Generate video from images, audio, and subtitles
 def compile_video(images, voiceover, subtitles, font_style, output_file="output_video.mp4"):
     total_duration = 60  # Limit video to 60 seconds
-    image_duration = total_duration / len(images)
-    
+    image_duration = total_duration / len(images) if images else 0
     clips = []
+
     for idx, image_url in enumerate(images):
-        img_data = requests.get(image_url).content
-        img_file = f'image_{idx}.jpg'
-        with open(img_file, 'wb') as handler:
-            handler.write(img_data)
-        clips.append(img_file)
-    
-    clip = ImageSequenceClip(clips, durations=[image_duration] * len(images))
-    audio_clip = AudioFileClip(voiceover)
-    clip = clip.set_audio(audio_clip)
-    
-    # Subtitle generation
+        img_clip = ImageSequenceClip([image_url], fps=24).set_duration(image_duration)
+        clips.append(img_clip)
+
+    audio_clip = AudioFileClip(voiceover).set_duration(total_duration)
+    video = CompositeVideoClip(clips).set_duration(total_duration).set_audio(audio_clip)
+
+    # Create subtitles
     generator = lambda txt: TextClip(txt, font=font_style, fontsize=24, color='white')
     subtitle_clip = SubtitlesClip(subtitles, generator)
-    final_video = CompositeVideoClip([clip, subtitle_clip.set_pos(('center', 'bottom'))])
     
-    # Write video file
-    final_video.write_videofile(output_file, codec='libx264', audio_codec='aac')
+    # Combine video and subtitles
+    final_video = CompositeVideoClip([video, subtitle_clip])
+    final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
+
     return output_file
 
-# Clean up story segments to remove numbering
-def clean_story_segments(story_segments):
-    cleaned_segments = []
-    for segment in story_segments:
-        cleaned_segment = segment.strip()
-        if cleaned_segment and (not cleaned_segment[0].isdigit() or '.' not in cleaned_segment[:3]):
-            cleaned_segments.append(cleaned_segment)
-    return cleaned_segments
-
-# Streamlit app interface
+# Main app interface
 st.title("Story-Driven Video Generator")
 
 user_prompt = st.text_area("Enter a short story or theme for the video:", "Spooky Haunted Graveyard in Texas")
@@ -229,19 +251,25 @@ if st.button("Generate Video"):
             enhanced_prompt = enhance_prompt(user_prompt)
             st.write(f"Enhanced Prompt: {enhanced_prompt}")
 
-        # Generate story segments from the enhanced prompt
+        # Generate a consistent style prompt
+        with st.spinner("Generating style prompt..."):
+            style_prompt = generate_style_prompt(enhanced_prompt)
+            st.write(f"Style Prompt: {style_prompt}")
+
+        # Generate story segments from the enhanced prompt (limited to 5 segments)
         with st.spinner("Generating story segments..."):
             story_segments = generate_story_segments(enhanced_prompt)
-            story_segments = clean_story_segments(story_segments)
+            story_segments = [segment for segment in story_segments if segment]  # Remove any empty segments
+            story_segments = story_segments[:5]  # Limit to first 5 segments
             st.write("Generated Story Segments:")
             for segment in story_segments:
                 st.write(segment)
         
-        # Generate images
+        # Generate images (limited to 5 images)
         images = []
         for segment in story_segments:
             with st.spinner(f"Generating image for: {segment}"):
-                img_url = generate_image_from_prompt(segment)
+                img_url = generate_image_from_prompt(create_image_prompt(segment, style_prompt))
                 if img_url:
                     images.append(img_url)
                 else:
@@ -252,7 +280,7 @@ if st.button("Generate Video"):
             # Generate voiceover
             with st.spinner("Generating voiceover..."):
                 voiceover_file = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
-                
+
                 if voiceover_file:
                     # Create subtitles
                     subtitles = create_subtitles("\n".join(story_segments), 60)
@@ -275,3 +303,4 @@ if st.button("Generate Video"):
                         delete_from_s3(f"generated_files/{voiceover_file}")
                         for idx, _ in enumerate(images):
                             delete_from_s3(f"generated_files/image_{idx}.jpg")
+
