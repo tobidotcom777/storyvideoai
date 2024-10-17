@@ -54,19 +54,27 @@ def generate_image_from_prompt(prompt):
         return None
     try:
         data = {
-            "model": "dall-e-3",
+            "model": "dall-e-3",  # Specify the model
             "prompt": prompt,
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "url"
+            "n": 1,  # DALL-E 3 only supports n=1
+            "size": "1024x1024",  # Can be 1024x1024, 1792x1024, or 1024x1792
+            "response_format": "url"  # The format of the returned image
         }
         response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
         
-        # Log the API response
-        st.write(f"API Response: {response.text}")  # For debugging purposes
-
+        # Log the API response for debugging
+        st.write(f"API Response: {response.text}")  # Log the response to the Streamlit interface
+        
         response.raise_for_status()  # Raise an HTTPError for bad responses
-        return response.json()['data'][0]['url']
+        
+        # Parse the image URL from the response
+        image_data = response.json().get('data', [])
+        if not image_data:
+            st.error("No image URLs were returned by the API.")
+            return None
+        
+        return image_data[0]['url']
+    
     except requests.exceptions.HTTPError as http_err:
         st.error(f"HTTP error occurred: {http_err}")
         return None
@@ -158,7 +166,7 @@ def clean_story_segments(story_segments):
 # Streamlit app interface
 st.title("Story-Driven Video Generator")
 
-user_prompt = st.text_area("Enter a short story or theme for the video:", "Spooky Hunted Graveyard in Texas")
+user_prompt = st.text_area("Enter a short story or theme for the video:", "Spooky Haunted Graveyard in Texas")
 voice_choice = st.selectbox("Choose a voice for the narration:", AVAILABLE_VOICES)
 font_choice = st.selectbox("Choose a font style for subtitles:", ["Arial-Bold", "Courier", "Helvetica", "Times-Roman", "Verdana"])
 
@@ -201,10 +209,9 @@ if st.button("Generate Video"):
                 
                 # Download button for the video
                 with open(video_file, "rb") as f:
-                    st.download_button("Download Video", data=f, file_name="final_video.mp4", mime="video/mp4")
+                    st.download_button("Download Video", data=f, file_name="output_video.mp4")
                 
-                # Clean up intermediate files
+                # Clean up S3 space
                 delete_from_s3(f"generated_files/{voiceover_file}")
-                for img_file in images:
-                    os.remove(img_file)
-                os.remove(video_file)
+                for idx, _ in enumerate(images):
+                    delete_from_s3(f"generated_files/image_{idx}.jpg")
