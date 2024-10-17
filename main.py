@@ -23,6 +23,7 @@ s3_client = boto3.client(
 # OpenAI API URLs
 IMAGE_API_URL = "https://api.openai.com/v1/images/generations"
 TTS_API_URL = "https://api.openai.com/v1/audio/speech"
+CHAT_API_URL = "https://api.openai.com/v1/chat/completions"
 HEADERS = {"Authorization": f"Bearer {openai_api_key}"}
 
 AVAILABLE_VOICES = ["Alloy", "Echo", "Fable", "Onyx", "Nova", "Shimmer"]
@@ -47,6 +48,26 @@ def delete_from_s3(s3_key):
     except Exception as e:
         st.error(f"Failed to delete {s3_key} from S3: {e}")
 
+# Function to enhance the user prompt
+def enhance_prompt(prompt):
+    try:
+        data = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": f"Enhance the following prompt for a story video: {prompt}"}
+            ]
+        }
+        response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
+        response.raise_for_status()  # Raise an HTTPError for bad responses
+        enhanced_prompt = response.json()['choices'][0]['message']['content']
+        return enhanced_prompt
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"Error enhancing prompt: {http_err}")
+        return prompt  # Fallback to the original prompt in case of error
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return prompt  # Fallback to the original prompt in case of error
+
 # Function to generate images from a prompt
 def generate_image_from_prompt(prompt):
     if not prompt.strip():
@@ -65,11 +86,12 @@ def generate_image_from_prompt(prompt):
         st.write(f"Sending prompt to OpenAI API: {prompt}")
 
         response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
-        
+
         # Log the API response for debugging
         st.write(f"API Response Status Code: {response.status_code}")
         st.write(f"API Response Body: {response.text}")  # Log the response to the Streamlit interface
-        
+
+        # Check for HTTP errors
         response.raise_for_status()  # Raise an HTTPError for bad responses
         
         # Parse the image URL from the response
@@ -182,12 +204,16 @@ if st.button("Generate Video"):
     if not user_prompt.strip():
         st.error("Please enter a valid story or theme.")
     else:
-        # Placeholder for optimized prompt and cleaned story segments
-        story_segments = [f"{i+1}. {user_prompt}" for i in range(5)]  # Generate fake 5 segments for testing
-        story_segments = clean_story_segments(story_segments)
+        # Enhance the user prompt
+        with st.spinner("Enhancing your prompt..."):
+            enhanced_prompt = enhance_prompt(user_prompt)
+            st.write(f"Enhanced Prompt: {enhanced_prompt}")
         
         # Generate images
         images = []
+        story_segments = [f"{i+1}. {enhanced_prompt}" for i in range(5)]  # Generate fake 5 segments for testing
+        story_segments = clean_story_segments(story_segments)
+
         for segment in story_segments:
             img_url = generate_image_from_prompt(segment)
             if img_url:
