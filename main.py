@@ -40,14 +40,6 @@ def upload_to_s3(filename):
         st.error(f"Failed to upload {filename} to S3: {e}")
         return None
 
-# Delete files from S3
-def delete_from_s3(s3_key):
-    try:
-        s3_client.delete_object(Bucket=aws_s3_bucket_name, Key=s3_key)
-        st.write(f"Deleted {s3_key} from S3")
-    except Exception as e:
-        st.error(f"Failed to delete {s3_key} from S3: {e}")
-
 # Function to enhance the user prompt
 def enhance_prompt(prompt):
     try:
@@ -58,15 +50,15 @@ def enhance_prompt(prompt):
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         enhanced_prompt = response.json()['choices'][0]['message']['content']
         return enhanced_prompt
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error enhancing prompt: {http_err}")
-        return prompt  # Fallback to the original prompt in case of error
+        return prompt
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return prompt  # Fallback to the original prompt in case of error
+        return prompt
 
 # Function to generate a consistent style prompt based on the enhanced prompt
 def generate_style_prompt(enhanced_prompt):
@@ -74,19 +66,19 @@ def generate_style_prompt(enhanced_prompt):
         data = {
             "model": "gpt-4o-mini",
             "messages": [
-                {"role": "user", "content": f"Generate a consistent style and setting description for images based on the following enhanced prompt: {enhanced_prompt}"}
+                {"role": "user", "content": f"Generate a comma-separated list of style and setting descriptions for images based on the following enhanced prompt: {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         style_prompt = response.json()['choices'][0]['message']['content']
         return style_prompt
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating style prompt: {http_err}")
-        return ""  # Return empty style if there's an error
+        return ""
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return ""  # Return empty style if there's an error
+        return ""
 
 # Function to generate story segments from the enhanced prompt
 def generate_story_segments(enhanced_prompt):
@@ -98,20 +90,20 @@ def generate_story_segments(enhanced_prompt):
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         story = response.json()['choices'][0]['message']['content']
-        return story.split("\n")[:5]  # Limit to first 5 segments
+        return story.split("\n")[:5]
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating story: {http_err}")
-        return []  # Return an empty list in case of error
+        return []
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return []  # Return an empty list in case of error
+        return []
 
 # Function to create a consistent image prompt
 def create_image_prompt(segment, style_prompt):
     negative_prompt = "Make sure there is no text in the image."
-    return f"{style_prompt} {segment.strip()} {negative_prompt}"
+    return f"{style_prompt}, {segment.strip()}, {negative_prompt}"
 
 # Function to generate images from a prompt
 def generate_image_from_prompt(prompt):
@@ -127,13 +119,11 @@ def generate_image_from_prompt(prompt):
             "response_format": "url"
         }
 
-        # Log the prompt being sent for debugging
         st.write(f"Sending prompt to OpenAI API: {prompt}")
 
         response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         
-        # Parse the image URL from the response
         image_data = response.json().get('data', [])
         if not image_data:
             st.error("No image URLs were returned by the API.")
@@ -163,16 +153,15 @@ def generate_voice_overlay(text, voice="alloy", speed=1):
             "response_format": "mp3"
         }
 
-        # Log the data being sent for debugging
         st.write(f"Sending data to OpenAI TTS API: {data}")
 
         response = requests.post(TTS_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         
         voiceover_filename = "voiceover.mp3"
         with open(voiceover_filename, "wb") as f:
             f.write(response.content)
-        return upload_to_s3(voiceover_filename)  # Upload to S3 and return URL
+        return upload_to_s3(voiceover_filename)
     except requests.exceptions.HTTPError as http_err:
         st.error(f"HTTP error occurred: {http_err}")
         return None
@@ -233,30 +222,25 @@ font_choice = st.selectbox("Choose a font style for subtitles:", ["Arial-Bold", 
 if st.button("Generate Video"):
     st.info("Generating story video... Please be patient, this may take a few minutes.")
     
-    # Validate user input
     if not user_prompt.strip():
         st.error("Please enter a valid story or theme.")
     else:
-        # Enhance the user prompt
         with st.spinner("Enhancing your prompt..."):
             enhanced_prompt = enhance_prompt(user_prompt)
             st.write(f"Enhanced Prompt: {enhanced_prompt}")
 
-        # Generate a consistent style prompt
         with st.spinner("Generating style prompt..."):
             style_prompt = generate_style_prompt(enhanced_prompt)
             st.write(f"Style Prompt: {style_prompt}")
 
-        # Generate story segments from the enhanced prompt (limited to 5 segments)
         with st.spinner("Generating story segments..."):
             story_segments = generate_story_segments(enhanced_prompt)
-            story_segments = [segment for segment in story_segments if segment]  # Remove any empty segments
-            story_segments = story_segments[:5]  # Limit to first 5 segments
+            story_segments = [segment for segment in story_segments if segment]
+            story_segments = story_segments[:5]
             st.write("Generated Story Segments:")
             for segment in story_segments:
                 st.write(segment)
         
-        # Generate images (limited to 5 images)
         images = []
         for segment in story_segments:
             with st.spinner(f"Generating image for: {segment}"):
@@ -265,26 +249,21 @@ if st.button("Generate Video"):
                     images.append(img_url)
                 else:
                     st.error("No images were generated. Please check the prompt or try again.")
-                    break  # Exit loop if any image fails to generate
+                    break
         
-        if len(images) > 0:  # Proceed only if at least one image was generated
-            # Generate voiceover
+        if len(images) > 0:
             with st.spinner("Generating voiceover..."):
                 voiceover_url = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
 
                 if voiceover_url:
-                    # Create subtitles
                     subtitles = create_subtitles("\n".join(story_segments), 60)
                     
-                    # Compile video
                     with st.spinner("Compiling video..."):
                         video_url = compile_video(images, voiceover_url, subtitles, font_choice)
                         
                         if video_url:
-                            # Display the video in the app
                             st.video(video_url)
                             
-                            # Download button for the video
                             with open(video_url.split('/')[-1], "rb") as f:
                                 st.download_button("Download Video", data=f, file_name="output_video.mp4")
                         else:
