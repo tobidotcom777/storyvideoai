@@ -214,7 +214,6 @@ def compile_video(images, voiceover_url, subtitles, font_style, output_file="out
     clips = []
 
     for idx, image_url in enumerate(images):
-        # Download the image and process it for MoviePy
         img_filename = f"image_{idx}.png"
         img_data = requests.get(image_url).content
         with open(img_filename, 'wb') as img_file:
