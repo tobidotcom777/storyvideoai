@@ -3,6 +3,7 @@ import requests
 import boto3
 import os
 from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip, TextClip
+from moviepy.video.tools.subtitles import SubtitlesClip
 
 # Access credentials from secrets.toml (Managed by Streamlit)
 openai_api_key = st.secrets["OPENAI_API_KEY"]
@@ -40,6 +41,14 @@ def upload_to_s3(filename):
         st.error(f"Failed to upload {filename} to S3: {e}")
         return None
 
+# Delete files from S3
+def delete_from_s3(s3_key):
+    try:
+        s3_client.delete_object(Bucket=aws_s3_bucket_name, Key=s3_key)
+        st.write(f"Deleted {s3_key} from S3")
+    except Exception as e:
+        st.error(f"Failed to delete {s3_key} from S3: {e}")
+
 # Function to enhance the user prompt
 def enhance_prompt(prompt):
     try:
@@ -56,6 +65,29 @@ def enhance_prompt(prompt):
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error enhancing prompt: {http_err}")
         return prompt  # Fallback to the original prompt in case of error
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return prompt  # Fallback to the original prompt in case of error
+
+# Function to generate a consistent style prompt based on the enhanced prompt
+def generate_style_prompt(enhanced_prompt):
+    try:
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "user", "content": f"Generate a consistent style and setting description for images based on the following enhanced prompt: {enhanced_prompt}"}
+            ]
+        }
+        response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
+        response.raise_for_status()  # Raise an HTTPError for bad responses
+        style_prompt = response.json()['choices'][0]['message']['content']
+        return style_prompt
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"Error generating style prompt: {http_err}")
+        return ""  # Return empty style if there's an error
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return ""  # Return empty style if there's an error
 
 # Function to generate story segments from the enhanced prompt
 def generate_story_segments(enhanced_prompt):
@@ -73,11 +105,14 @@ def generate_story_segments(enhanced_prompt):
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating story: {http_err}")
         return []  # Return an empty list in case of error
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return []  # Return an empty list in case of error
 
 # Function to create a consistent image prompt
-def create_image_prompt(segment):
+def create_image_prompt(segment, style_prompt):
     negative_prompt = "Make sure there is no text in the image."
-    return f"{segment.strip()} {negative_prompt}"
+    return f"{style_prompt} {segment.strip()} {negative_prompt}"
 
 # Function to generate images from a prompt
 def generate_image_from_prompt(prompt):
@@ -98,59 +133,103 @@ def generate_image_from_prompt(prompt):
 
         response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
 
+        # Log the API response for debugging
+        st.write(f"API Response Status Code: {response.status_code}")
+        st.write(f"API Response Body: {response.text}")  # Log the response to the Streamlit interface
+
         # Check for HTTP errors
         response.raise_for_status()  # Raise an HTTPError for bad responses
-
-        # Extract image URL from response
-        return response.json()["data"][0]["url"]
+        
+        # Parse the image URL from the response
+        image_data = response.json().get('data', [])
+        if not image_data:
+            st.error("No image URLs were returned by the API.")
+            return None
+        
+        return image_data[0]['url']
+    
     except requests.exceptions.HTTPError as http_err:
-        st.error(f"Error generating image: {http_err}")
-        return None  # Return None if there's an error
-
-# Function to generate voice overlay
-def generate_voice_overlay(input_text, voice="onyx"):
-    if not input_text.strip():
-        st.error("Input text cannot be empty.")
+        st.error(f"HTTP error occurred: {http_err}")
         return None
+    except Exception as e:
+        st.error(f"Error generating image: {str(e)}")
+        return None
+
+# Generate voice overlay using OpenAI's TTS API
+def generate_voice_overlay(text, voice="Alloy", speed=1):
+    if not text.strip():
+        st.error("Text for voiceover cannot be empty.")
+        return None
+    
+    # Ensure the voice is in lowercase
+    voice = voice.lower()
+    
     try:
         data = {
-            "model": "tts-1",
-            "input": input_text,
+            "model": "tts-1",  # Specify the TTS model
+            "input": text,
             "voice": voice,
+            "speed": speed,
             "response_format": "mp3"
         }
+
+        # Log the data being sent for debugging
+        st.write(f"Sending data to OpenAI TTS API: {data}")
+
         response = requests.post(TTS_API_URL, headers=HEADERS, json=data)
         response.raise_for_status()  # Raise an HTTPError for bad responses
-        audio_file_path = "voiceover.mp3"
-        with open(audio_file_path, 'wb') as audio_file:
-            audio_file.write(response.content)
-        return audio_file_path
+        
+        voiceover_filename = "voiceover.mp3"
+        with open(voiceover_filename, "wb") as f:
+            f.write(response.content)
+        return voiceover_filename
     except requests.exceptions.HTTPError as http_err:
-        st.error(f"Error generating voiceover: {http_err}")
-        return None  # Return None if there's an error
+        st.error(f"HTTP error occurred: {http_err}")
+        return None
+    except Exception as e:
+        st.error(f"Error generating voiceover: {str(e)}")
+        return None
 
-# Function to compile the final video with images, audio, and subtitles
-def compile_video(images, voiceover, font):
+# Function to create subtitles based on text and duration
+def create_subtitles(text, duration):
+    lines = text.split("\n")
+    if not lines:
+        st.error("Subtitle text cannot be empty.")
+        return []
+    
+    subtitles = []
+    per_line_duration = duration / len(lines)
+    start_time = 0
+
+    for line in lines:
+        if not line.strip():
+            continue
+        end_time = start_time + per_line_duration
+        subtitles.append(((start_time, end_time), line.strip()))
+        start_time = end_time
+
+    return subtitles
+
+# Generate video from images, audio, and subtitles
+def compile_video(images, voiceover, subtitles, font_style, output_file="output_video.mp4"):
+    total_duration = 60  # Limit video to 60 seconds
+    image_duration = total_duration / len(images) if images else 0
     clips = []
-    total_duration = len(images) * 3  # 3 seconds per image
 
-    for img_url in images:
-        img_clip = ImageSequenceClip([img_url], fps=24).set_duration(3)
+    for idx, image_url in enumerate(images):
+        img_clip = ImageSequenceClip([image_url], fps=24).set_duration(image_duration)
         clips.append(img_clip)
 
     audio_clip = AudioFileClip(voiceover).set_duration(total_duration)
     video = CompositeVideoClip(clips).set_duration(total_duration).set_audio(audio_clip)
 
-    # Generate subtitles using the selected font
-    subtitles = [(i * 3, (i + 1) * 3, segment) for i, segment in enumerate(story_segments)]
-    subtitle_clips = [TextClip(txt, fontsize=24, color='white', font=font).set_position('bottom').set_duration(3).set_start(start) for start, end, txt in subtitles]
+    # Create subtitles
+    generator = lambda txt: TextClip(txt, font=font_style, fontsize=24, color='white')
+    subtitle_clip = SubtitlesClip(subtitles, generator)
     
-    # Composite the video with subtitles
-    for subtitle in subtitle_clips:
-        video = CompositeVideoClip([video, subtitle])
-    
-    output_file = "output_video.mp4"
-    video.write_videofile(output_file, codec="libx264", audio_codec="aac")
+    # Combine video and subtitles
+    final_video = CompositeVideoClip([video, subtitle_clip])
+    final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
 
     return output_file
 
@@ -159,7 +238,7 @@ st.title("Story-Driven Video Generator")
 
 user_prompt = st.text_area("Enter a short story or theme for the video:", "Spooky Haunted Graveyard in Texas")
 voice_choice = st.selectbox("Choose a voice for the narration:", AVAILABLE_VOICES)
-font_choice = st.selectbox("Choose a font style for the subtitles:", AVAILABLE_FONTS)
+font_choice = st.selectbox("Choose a font style for subtitles:", AVAILABLE_FONTS)
 
 if st.button("Generate Video"):
     st.info("Generating story video... Please be patient, this may take a few minutes.")
@@ -173,7 +252,12 @@ if st.button("Generate Video"):
             enhanced_prompt = enhance_prompt(user_prompt)
             st.write(f"Enhanced Prompt: {enhanced_prompt}")
 
-        # Generate story segments from the enhanced prompt
+        # Generate a consistent style prompt
+        with st.spinner("Generating style prompt..."):
+            style_prompt = generate_style_prompt(enhanced_prompt)
+            st.write(f"Style Prompt: {style_prompt}")
+
+        # Generate story segments from the enhanced prompt (limited to 5 segments)
         with st.spinner("Generating story segments..."):
             story_segments = generate_story_segments(enhanced_prompt)
             story_segments = [segment for segment in story_segments if segment]  # Remove any empty segments
@@ -186,7 +270,7 @@ if st.button("Generate Video"):
         images = []
         for segment in story_segments:
             with st.spinner(f"Generating image for: {segment}"):
-                img_url = generate_image_from_prompt(create_image_prompt(segment))
+                img_url = generate_image_from_prompt(create_image_prompt(segment, style_prompt))
                 if img_url:
                     images.append(img_url)
                 else:
@@ -199,18 +283,24 @@ if st.button("Generate Video"):
                 voiceover_file = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
 
                 if voiceover_file:
+                    # Create subtitles
+                    subtitles = create_subtitles("\n".join(story_segments), 60)
+                    
                     # Compile video
                     with st.spinner("Compiling video..."):
-                        video_file = compile_video(images, voiceover_file, font_choice)
-                        if video_file:
-                            st.success("Video successfully created!")
-                            st.video(video_file)
-                            st.download_button("Download Video", video_file)
-                            # Upload the final video to S3
-                            upload_to_s3(video_file)
-
-# Clear temporary files if needed (optional)
-# os.remove("voiceover.mp3")
-# for img in images:
-#     os.remove(img)  # Clean up any image files if downloaded
-
+                        video_file = compile_video(images, voiceover_file, subtitles, font_choice)
+                        
+                        # Upload final video to S3
+                        s3_video_url = upload_to_s3(video_file)
+                        
+                        # Display the video in the app
+                        st.video(s3_video_url)
+                        
+                        # Download button for the video
+                        with open(video_file, "rb") as f:
+                            st.download_button("Download Video", data=f, file_name="output_video.mp4")
+                        
+                        # Clean up S3 space
+                        delete_from_s3(f"generated_files/{voiceover_file}")
+                        for idx, _ in enumerate(images):
+                            delete_from_s3(f"generated_files/image_{idx}.jpg")
