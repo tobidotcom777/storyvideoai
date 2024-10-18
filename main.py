@@ -2,8 +2,8 @@ import streamlit as st
 import requests
 import boto3
 import os
-from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip, TextClip, concatenate_videoclips
-from moviepy.video.VideoClip import ColorClip
+from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip
+from moviepy.video.tools.subtitles import SubtitlesClip
 from PIL import Image, ImageDraw, ImageFont
 
 # Access credentials from secrets.toml (Managed by Streamlit)
@@ -67,7 +67,7 @@ def generate_style_prompt(enhanced_prompt):
         data = {
             "model": "gpt-4o-mini",
             "messages": [
-                {"role": "user", "content": f"Generate a consistent style and setting description for images as a comma-separated list based on the following enhanced prompt: {enhanced_prompt}"}
+                {"role": "user", "content": f"Generate a comma-separated list of visual style elements based on the following enhanced prompt: {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
@@ -201,13 +201,15 @@ def compile_video(images, voiceover, subtitles, font_style, output_file="output_
     audio_clip = AudioFileClip(voiceover).set_duration(total_duration)
     video = CompositeVideoClip(clips).set_duration(total_duration).set_audio(audio_clip)
 
-    # Create subtitle images instead of using TextClip
+    # Create subtitles without relying on external fonts
     subtitle_clips = []
     for (start, end), text in subtitles:
         # Create a blank image for subtitle
         subtitle_image = Image.new("RGBA", (1024, 100), (0, 0, 0, 0))
         draw = ImageDraw.Draw(subtitle_image)
-        font = ImageFont.truetype("arial.ttf", 24)  # Use a TTF font available on your system
+        
+        # Using default PIL font
+        font = ImageFont.load_default()  # Load default font
         draw.text((10, 10), text, font=font, fill="white")
         
         # Convert to a VideoClip
