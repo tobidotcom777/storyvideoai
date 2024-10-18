@@ -2,9 +2,8 @@ import streamlit as st
 import requests
 import boto3
 import os
-from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip
+from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip, TextClip
 from moviepy.video.tools.subtitles import SubtitlesClip
-from PIL import Image, ImageDraw, ImageFont
 
 # Access credentials from secrets.toml (Managed by Streamlit)
 openai_api_key = st.secrets["OPENAI_API_KEY"]
@@ -41,25 +40,33 @@ def upload_to_s3(filename):
         st.error(f"Failed to upload {filename} to S3: {e}")
         return None
 
+# Delete files from S3
+def delete_from_s3(s3_key):
+    try:
+        s3_client.delete_object(Bucket=aws_s3_bucket_name, Key=s3_key)
+        st.write(f"Deleted {s3_key} from S3")
+    except Exception as e:
+        st.error(f"Failed to delete {s3_key} from S3: {e}")
+
 # Function to enhance the user prompt
 def enhance_prompt(prompt):
     try:
         data = {
-            "model": "gpt-4o-mini",
+            "model": "gpt-4o-mini",  # Use gpt-4o-mini for prompt enhancement
             "messages": [
                 {"role": "user", "content": f"Enhance the following prompt for a story video: {prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()
+        response.raise_for_status()  # Raise an HTTPError for bad responses
         enhanced_prompt = response.json()['choices'][0]['message']['content']
         return enhanced_prompt
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error enhancing prompt: {http_err}")
-        return prompt
+        return prompt  # Fallback to the original prompt in case of error
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return prompt
+        return prompt  # Fallback to the original prompt in case of error
 
 # Function to generate a consistent style prompt based on the enhanced prompt
 def generate_style_prompt(enhanced_prompt):
@@ -67,39 +74,39 @@ def generate_style_prompt(enhanced_prompt):
         data = {
             "model": "gpt-4o-mini",
             "messages": [
-                {"role": "user", "content": f"Generate a comma-separated list of visual style elements based on the following enhanced prompt: {enhanced_prompt}"}
+                {"role": "user", "content": f"Generate a consistent style and setting description for images based on the following enhanced prompt: {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()
+        response.raise_for_status()  # Raise an HTTPError for bad responses
         style_prompt = response.json()['choices'][0]['message']['content']
         return style_prompt
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating style prompt: {http_err}")
-        return ""
+        return ""  # Return empty style if there's an error
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return ""
+        return ""  # Return empty style if there's an error
 
 # Function to generate story segments from the enhanced prompt
 def generate_story_segments(enhanced_prompt):
     try:
         data = {
-            "model": "gpt-4o-mini",
+            "model": "gpt-4o-mini",  # Use gpt-4o-mini for story generation
             "messages": [
                 {"role": "user", "content": f"Create a short story with a maximum of 5 segments from the following prompt: {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()
+        response.raise_for_status()  # Raise an HTTPError for bad responses
         story = response.json()['choices'][0]['message']['content']
-        return story.split("\n")[:5]
+        return story.split("\n")[:5]  # Limit to first 5 segments
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating story: {http_err}")
-        return []
+        return []  # Return an empty list in case of error
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return []
+        return []  # Return an empty list in case of error
 
 # Function to create a consistent image prompt
 def create_image_prompt(segment, style_prompt):
@@ -113,16 +120,26 @@ def generate_image_from_prompt(prompt):
         return None
     try:
         data = {
-            "model": "dall-e-3",
+            "model": "dall-e-3",  # Specify the model
             "prompt": prompt,
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "url"
+            "n": 1,  # DALL-E 3 only supports n=1
+            "size": "1024x1024",  # Specify size
+            "response_format": "url"  # The format of the returned image
         }
 
+        # Log the prompt being sent for debugging
+        st.write(f"Sending prompt to OpenAI API: {prompt}")
+
         response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()
+
+        # Log the API response for debugging
+        st.write(f"API Response Status Code: {response.status_code}")
+        st.write(f"API Response Body: {response.text}")  # Log the response to the Streamlit interface
+
+        # Check for HTTP errors
+        response.raise_for_status()  # Raise an HTTPError for bad responses
         
+        # Parse the image URL from the response
         image_data = response.json().get('data', [])
         if not image_data:
             st.error("No image URLs were returned by the API.")
@@ -143,24 +160,33 @@ def generate_voice_overlay(text, voice="Alloy", speed=1):
         st.error("Text for voiceover cannot be empty.")
         return None
     
+    # Ensure the voice is in lowercase
     voice = voice.lower()
     
     try:
         data = {
-            "model": "tts-1",
+            "model": "tts-1",  # Specify the TTS model
             "input": text,
             "voice": voice,
             "speed": speed,
             "response_format": "mp3"
         }
 
+        # Log the data being sent for debugging
+        st.write(f"Sending data to OpenAI TTS API: {data}")
+
         response = requests.post(TTS_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()
+        response.raise_for_status()  # Raise an HTTPError for bad responses
         
         voiceover_filename = "voiceover.mp3"
         with open(voiceover_filename, "wb") as f:
             f.write(response.content)
-        return voiceover_filename
+
+        # Upload the audio file to S3 and get the URL
+        s3_audio_url = upload_to_s3(voiceover_filename)
+        
+        return s3_audio_url  # Return the URL of the uploaded audio file
+
     except requests.exceptions.HTTPError as http_err:
         st.error(f"HTTP error occurred: {http_err}")
         return None
@@ -189,7 +215,7 @@ def create_subtitles(text, duration):
     return subtitles
 
 # Generate video from images, audio, and subtitles
-def compile_video(images, voiceover, subtitles, font_style, output_file="output_video.mp4"):
+def compile_video(images, voiceover_url, subtitles, font_style, output_file="output_video.mp4"):
     total_duration = 60  # Limit video to 60 seconds
     image_duration = total_duration / len(images) if images else 0
     clips = []
@@ -198,29 +224,19 @@ def compile_video(images, voiceover, subtitles, font_style, output_file="output_
         img_clip = ImageSequenceClip([image_url], fps=24).set_duration(image_duration)
         clips.append(img_clip)
 
-    audio_clip = AudioFileClip(voiceover).set_duration(total_duration)
+    audio_clip = AudioFileClip(voiceover_url).set_duration(total_duration)
     video = CompositeVideoClip(clips).set_duration(total_duration).set_audio(audio_clip)
 
-    # Create subtitles without relying on external fonts
-    subtitle_clips = []
-    for (start, end), text in subtitles:
-        # Create a blank image for subtitle
-        subtitle_image = Image.new("RGBA", (1024, 100), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(subtitle_image)
-        
-        # Using default PIL font
-        font = ImageFont.load_default()  # Load default font
-        draw.text((10, 10), text, font=font, fill="white")
-        
-        # Convert to a VideoClip
-        subtitle_clip = ImageSequenceClip([subtitle_image], fps=24).set_duration(end - start).set_start(start)
-        subtitle_clips.append(subtitle_clip)
-
+    # Create subtitles
+    generator = lambda txt: TextClip(txt, font=font_style, fontsize=24, color='white')
+    subtitle_clip = SubtitlesClip(subtitles, generator)
+    
     # Combine video and subtitles
-    final_video = CompositeVideoClip([video] + subtitle_clips)
+    final_video = CompositeVideoClip([video, subtitle_clip])
     final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
 
-    return output_file
+    # Upload the final video to S3 and return the URL
+    return upload_to_s3(output_file)
 
 # Main app interface
 st.title("Story-Driven Video Generator")
@@ -259,8 +275,7 @@ if st.button("Generate Video"):
         images = []
         for segment in story_segments:
             with st.spinner(f"Generating image for: {segment}"):
-                img_prompt = create_image_prompt(segment, style_prompt)
-                img_url = generate_image_from_prompt(img_prompt)
+                img_url = generate_image_from_prompt(create_image_prompt(segment, style_prompt))
                 if img_url:
                     images.append(img_url)
                 else:
@@ -270,27 +285,21 @@ if st.button("Generate Video"):
         if len(images) > 0:  # Proceed only if at least one image was generated
             # Generate voiceover
             with st.spinner("Generating voiceover..."):
-                voiceover_file = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
+                voiceover_url = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
 
-                if voiceover_file:
+                if voiceover_url:
                     # Create subtitles
                     subtitles = create_subtitles("\n".join(story_segments), 60)
                     
                     # Compile video
                     with st.spinner("Compiling video..."):
-                        video_file = compile_video(images, voiceover_file, subtitles, font_choice)
+                        s3_video_url = compile_video(images, voiceover_url, subtitles, font_choice)
                         
-                        # Upload final video to S3
-                        s3_video_url = upload_to_s3(video_file)
-                        
-                        # Display the video in the app
-                        st.video(s3_video_url)
-                        
-                        # Download button for the video
-                        with open(video_file, "rb") as f:
-                            st.download_button("Download Video", data=f, file_name="output_video.mp4")
-                        
-                        # Clean up S3 space
-                        delete_from_s3(f"generated_files/{voiceover_file}")
-                        for idx, _ in enumerate(images):
-                            delete_from_s3(f"generated_files/image_{idx}.jpg")
+                        if s3_video_url:
+                            # Display the video in the app
+                            st.video(s3_video_url)
+                            
+                            # Clean up S3 space
+                            delete_from_s3(f"generated_files/{voiceover_url.split('/')[-1]}")
+                            for idx, _ in enumerate(images):
+                                delete_from_s3(f"generated_files/image_{idx}.jpg")
