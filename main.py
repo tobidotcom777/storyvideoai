@@ -74,7 +74,7 @@ def generate_style_prompt(enhanced_prompt):
         data = {
             "model": "gpt-4o-mini",
             "messages": [
-                {"role": "user", "content": f"Generate a comma-separated list of visual style elements based on the following enhanced prompt: {enhanced_prompt}"}
+                {"role": "user", "content": f"Generate a comma-separated list of visual style elements based on the following enhanced prompt (avoid specific words): {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
@@ -83,7 +83,7 @@ def generate_style_prompt(enhanced_prompt):
         return style_prompt
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating style prompt: {http_err}")
-        return "" 
+        return ""
     except Exception as e:
         st.error(f"Error: {str(e)}")
         return ""
@@ -100,7 +100,7 @@ def generate_story_segments(enhanced_prompt):
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
         response.raise_for_status()
         story = response.json()['choices'][0]['message']['content']
-        return story.split("\n")[:5]  
+        return story.split("\n")[:5]
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating story: {http_err}")
         return []
@@ -214,27 +214,30 @@ def compile_video(images, voiceover_url, subtitles, font_style, output_file="out
     clips = []
 
     for idx, image_url in enumerate(images):
-        img_filename = f"image_{idx}.png"
-        img_data = requests.get(image_url).content
-        with open(img_filename, 'wb') as img_file:
-            img_file.write(img_data)
-        img_clip = ImageSequenceClip([img_filename], fps=24).set_duration(image_duration)
-        clips.append(img_clip)
+        try:
+            img_clip = ImageSequenceClip([image_url], fps=24).set_duration(image_duration)
+            clips.append(img_clip)
+        except Exception as e:
+            st.error(f"Error creating video clip for image {idx}: {str(e)}")
+            return None
 
-    audio_clip = AudioFileClip(voiceover_url).set_duration(total_duration)
-    video = CompositeVideoClip(clips).set_duration(total_duration).set_audio(audio_clip)
+    try:
+        audio_clip = AudioFileClip(voiceover_url).set_duration(total_duration)
+        video = CompositeVideoClip(clips).set_duration(total_duration).set_audio(audio_clip)
 
-    generator = lambda txt: TextClip(txt, font=font_style, fontsize=24, color='white')
-    subtitle_clip = SubtitlesClip(subtitles, generator)
+        # Create subtitles
+        generator = lambda txt: TextClip(txt, font=font_style, fontsize=24, color='white')
+        subtitle_clip = SubtitlesClip(subtitles, generator)
+        
+        # Combine video and subtitles
+        final_video = CompositeVideoClip([video, subtitle_clip])
+        final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
 
-    final_video = CompositeVideoClip([video, subtitle_clip])
-    
-    # Write final video file
-    final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
-    
-    s3_video_url = upload_to_s3(output_file)
-    
-    return s3_video_url
+        return upload_to_s3(output_file)
+
+    except Exception as e:
+        st.error(f"Error compiling video: {str(e)}")
+        return None
 
 # Main app interface
 st.title("Story-Driven Video Generator")
@@ -246,30 +249,24 @@ font_choice = st.selectbox("Choose a font style for subtitles:", ["Arial-Bold", 
 if st.button("Generate Video"):
     st.info("Generating story video... Please be patient, this may take a few minutes.")
     
-    # Validate user input
     if not user_prompt.strip():
         st.error("Please enter a valid story or theme.")
     else:
-        # Enhance the user prompt
         with st.spinner("Enhancing your prompt..."):
             enhanced_prompt = enhance_prompt(user_prompt)
             st.write(f"Enhanced Prompt: {enhanced_prompt}")
 
-        # Generate a consistent style prompt
         with st.spinner("Generating style prompt..."):
             style_prompt = generate_style_prompt(enhanced_prompt)
             st.write(f"Style Prompt: {style_prompt}")
 
-        # Generate story segments from the enhanced prompt (limited to 5 segments)
         with st.spinner("Generating story segments..."):
             story_segments = generate_story_segments(enhanced_prompt)
-            story_segments = [segment for segment in story_segments if segment]
-            story_segments = story_segments[:5]  
+            story_segments = [segment for segment in story_segments if segment][:5]
             st.write("Generated Story Segments:")
             for segment in story_segments:
                 st.write(segment)
         
-        # Generate images (limited to 5 images)
         images = []
         for segment in story_segments:
             with st.spinner(f"Generating image for: {segment}"):
@@ -278,24 +275,24 @@ if st.button("Generate Video"):
                     images.append(img_url)
                 else:
                     st.error("No images were generated. Please check the prompt or try again.")
-                    break  
+                    break
         
-        if len(images) > 0:  
-            # Generate voiceover
+        if len(images) > 0:
             with st.spinner("Generating voiceover..."):
-                voiceover_url = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
+                voiceover_file = generate_voice_overlay("\n".join(story_segments), voice=voice_choice)
+                if voiceover_file:
+                    subtitles = create_subtitles("\n".join(story_segments), total_duration)
 
-                if voiceover_url:
-                    # Create subtitles
-                    subtitles = create_subtitles("\n".join(story_segments), 60)
-                    
-                    # Compile video
                     with st.spinner("Compiling video..."):
-                        s3_video_url = compile_video(images, voiceover_url, subtitles, font_choice)
+                        video_url = compile_video(images, voiceover_file, subtitles, font_choice)
                         
-                        if s3_video_url:
-                            st.video(s3_video_url)
-                            
-                            delete_from_s3(f"generated_files/{voiceover_url.split('/')[-1]}")
-                            for idx, _ in enumerate(images):
-                                delete_from_s3(f"generated_files/image_{idx}.png")
+                        if video_url:
+                            st.video(video_url)
+                            with open(video_url.split('/')[-1], "rb") as f:
+                                st.download_button("Download Video", data=f, file_name="output_video.mp4")
+                        else:
+                            st.error("Video compilation failed. Please try again.")
+
+            delete_from_s3(f"generated_files/{voiceover_file.split('/')[-1]}")
+            for idx in range(len(images)):
+                delete_from_s3(f"generated_files/image_{idx}.jpg")
