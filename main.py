@@ -2,8 +2,9 @@ import streamlit as st
 import requests
 import boto3
 import os
-from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip, TextClip
-from moviepy.video.tools.subtitles import SubtitlesClip
+from moviepy.editor import ImageSequenceClip, AudioFileClip, CompositeVideoClip, TextClip, concatenate_videoclips
+from moviepy.video.VideoClip import ColorClip
+from PIL import Image, ImageDraw, ImageFont
 
 # Access credentials from secrets.toml (Managed by Streamlit)
 openai_api_key = st.secrets["OPENAI_API_KEY"]
@@ -27,7 +28,6 @@ CHAT_API_URL = "https://api.openai.com/v1/chat/completions"
 HEADERS = {"Authorization": f"Bearer {openai_api_key}"}
 
 AVAILABLE_VOICES = ["Alloy", "Echo", "Fable", "Onyx", "Nova", "Shimmer"]
-AVAILABLE_FONTS = ["Arial-Bold", "Courier", "Helvetica", "Times-Roman", "Verdana"]
 
 # Helper function to upload to S3
 def upload_to_s3(filename):
@@ -41,33 +41,25 @@ def upload_to_s3(filename):
         st.error(f"Failed to upload {filename} to S3: {e}")
         return None
 
-# Delete files from S3
-def delete_from_s3(s3_key):
-    try:
-        s3_client.delete_object(Bucket=aws_s3_bucket_name, Key=s3_key)
-        st.write(f"Deleted {s3_key} from S3")
-    except Exception as e:
-        st.error(f"Failed to delete {s3_key} from S3: {e}")
-
 # Function to enhance the user prompt
 def enhance_prompt(prompt):
     try:
         data = {
-            "model": "gpt-4o-mini",  # Use gpt-4o-mini for prompt enhancement
+            "model": "gpt-4o-mini",
             "messages": [
                 {"role": "user", "content": f"Enhance the following prompt for a story video: {prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         enhanced_prompt = response.json()['choices'][0]['message']['content']
         return enhanced_prompt
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error enhancing prompt: {http_err}")
-        return prompt  # Fallback to the original prompt in case of error
+        return prompt
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return prompt  # Fallback to the original prompt in case of error
+        return prompt
 
 # Function to generate a consistent style prompt based on the enhanced prompt
 def generate_style_prompt(enhanced_prompt):
@@ -75,44 +67,44 @@ def generate_style_prompt(enhanced_prompt):
         data = {
             "model": "gpt-4o-mini",
             "messages": [
-                {"role": "user", "content": f"Generate a consistent style and setting description for images based on the following enhanced prompt: {enhanced_prompt}"}
+                {"role": "user", "content": f"Generate a consistent style and setting description for images as a comma-separated list based on the following enhanced prompt: {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         style_prompt = response.json()['choices'][0]['message']['content']
         return style_prompt
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating style prompt: {http_err}")
-        return ""  # Return empty style if there's an error
+        return ""
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return ""  # Return empty style if there's an error
+        return ""
 
 # Function to generate story segments from the enhanced prompt
 def generate_story_segments(enhanced_prompt):
     try:
         data = {
-            "model": "gpt-4o-mini",  # Use gpt-4o-mini for story generation
+            "model": "gpt-4o-mini",
             "messages": [
                 {"role": "user", "content": f"Create a short story with a maximum of 5 segments from the following prompt: {enhanced_prompt}"}
             ]
         }
         response = requests.post(CHAT_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         story = response.json()['choices'][0]['message']['content']
-        return story.split("\n")[:5]  # Limit to first 5 segments
+        return story.split("\n")[:5]
     except requests.exceptions.HTTPError as http_err:
         st.error(f"Error generating story: {http_err}")
-        return []  # Return an empty list in case of error
+        return []
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return []  # Return an empty list in case of error
+        return []
 
 # Function to create a consistent image prompt
 def create_image_prompt(segment, style_prompt):
     negative_prompt = "Make sure there is no text in the image."
-    return f"{style_prompt} {segment.strip()} {negative_prompt}"
+    return f"{style_prompt}, {segment.strip()} {negative_prompt}"
 
 # Function to generate images from a prompt
 def generate_image_from_prompt(prompt):
@@ -121,26 +113,16 @@ def generate_image_from_prompt(prompt):
         return None
     try:
         data = {
-            "model": "dall-e-3",  # Specify the model
+            "model": "dall-e-3",
             "prompt": prompt,
-            "n": 1,  # DALL-E 3 only supports n=1
-            "size": "1024x1024",  # Specify size
-            "response_format": "url"  # The format of the returned image
+            "n": 1,
+            "size": "1024x1024",
+            "response_format": "url"
         }
 
-        # Log the prompt being sent for debugging
-        st.write(f"Sending prompt to OpenAI API: {prompt}")
-
         response = requests.post(IMAGE_API_URL, headers=HEADERS, json=data)
-
-        # Log the API response for debugging
-        st.write(f"API Response Status Code: {response.status_code}")
-        st.write(f"API Response Body: {response.text}")  # Log the response to the Streamlit interface
-
-        # Check for HTTP errors
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         
-        # Parse the image URL from the response
         image_data = response.json().get('data', [])
         if not image_data:
             st.error("No image URLs were returned by the API.")
@@ -161,23 +143,19 @@ def generate_voice_overlay(text, voice="Alloy", speed=1):
         st.error("Text for voiceover cannot be empty.")
         return None
     
-    # Ensure the voice is in lowercase
     voice = voice.lower()
     
     try:
         data = {
-            "model": "tts-1",  # Specify the TTS model
+            "model": "tts-1",
             "input": text,
             "voice": voice,
             "speed": speed,
             "response_format": "mp3"
         }
 
-        # Log the data being sent for debugging
-        st.write(f"Sending data to OpenAI TTS API: {data}")
-
         response = requests.post(TTS_API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()  # Raise an HTTPError for bad responses
+        response.raise_for_status()
         
         voiceover_filename = "voiceover.mp3"
         with open(voiceover_filename, "wb") as f:
@@ -223,12 +201,21 @@ def compile_video(images, voiceover, subtitles, font_style, output_file="output_
     audio_clip = AudioFileClip(voiceover).set_duration(total_duration)
     video = CompositeVideoClip(clips).set_duration(total_duration).set_audio(audio_clip)
 
-    # Create subtitles
-    generator = lambda txt: TextClip(txt, font=font_style, fontsize=24, color='white')
-    subtitle_clip = SubtitlesClip(subtitles, generator)
-    
+    # Create subtitle images instead of using TextClip
+    subtitle_clips = []
+    for (start, end), text in subtitles:
+        # Create a blank image for subtitle
+        subtitle_image = Image.new("RGBA", (1024, 100), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(subtitle_image)
+        font = ImageFont.truetype("arial.ttf", 24)  # Use a TTF font available on your system
+        draw.text((10, 10), text, font=font, fill="white")
+        
+        # Convert to a VideoClip
+        subtitle_clip = ImageSequenceClip([subtitle_image], fps=24).set_duration(end - start).set_start(start)
+        subtitle_clips.append(subtitle_clip)
+
     # Combine video and subtitles
-    final_video = CompositeVideoClip([video, subtitle_clip])
+    final_video = CompositeVideoClip([video] + subtitle_clips)
     final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
 
     return output_file
@@ -238,7 +225,7 @@ st.title("Story-Driven Video Generator")
 
 user_prompt = st.text_area("Enter a short story or theme for the video:", "Spooky Haunted Graveyard in Texas")
 voice_choice = st.selectbox("Choose a voice for the narration:", AVAILABLE_VOICES)
-font_choice = st.selectbox("Choose a font style for subtitles:", AVAILABLE_FONTS)
+font_choice = st.selectbox("Choose a font style for subtitles:", ["Arial-Bold", "Courier", "Helvetica", "Times-Roman", "Verdana"])
 
 if st.button("Generate Video"):
     st.info("Generating story video... Please be patient, this may take a few minutes.")
@@ -270,7 +257,8 @@ if st.button("Generate Video"):
         images = []
         for segment in story_segments:
             with st.spinner(f"Generating image for: {segment}"):
-                img_url = generate_image_from_prompt(create_image_prompt(segment, style_prompt))
+                img_prompt = create_image_prompt(segment, style_prompt)
+                img_url = generate_image_from_prompt(img_prompt)
                 if img_url:
                     images.append(img_url)
                 else:
